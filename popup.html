@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    :root {
+      --primary: #667eea;
+      --primary-dark: #5a67d8;
+      --success: #48bb78;
+      --warning: #ed8936;
+      --danger: #f56565;
+      --bg-dark: #1a202c;
+      --bg-card: #2d3748;
+      --text-primary: #f7fafc;
+      --text-secondary: #a0aec0;
+      --border: #4a5568;
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 420px;
+      min-height: 550px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #1a202c 0%, #2d3748 100%);
+      color: var(--text-primary);
+    }
+    
+    .container {
+      padding: 16px;
+    }
+    
+    /* 头部 */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .header h1::before {
+      content: '🔍';
+      font-size: 24px;
+    }
+    
+    .version {
+      font-size: 11px;
+      color: var(--text-secondary);
+      background: var(--bg-card);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    
+    /* 状态卡片 */
+    .status-card {
+      background: var(--bg-card);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      border-left: 4px solid var(--border);
+      transition: all 0.3s ease;
+    }
+    
+    .status-card.running {
+      border-left-color: var(--success);
+      background: linear-gradient(90deg, rgba(72, 187, 120, 0.1) 0%, var(--bg-card) 100%);
+    }
+    
+    .status-card.stopped {
+      border-left-color: var(--text-secondary);
+    }
+    
+    .status-card.captcha {
+      border-left-color: var(--warning);
+      background: linear-gradient(90deg, rgba(237, 137, 54, 0.1) 0%, var(--bg-card) 100%);
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.8; }
+    }
+    
+    .status-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    
+    .status-icon {
+      font-size: 20px;
+    }
+    
+    .status-text {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    
+    .status-detail {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    
+    /* 标签页 */
+    .tabs {
+      display: flex;
+      background: var(--bg-card);
+      border-radius: 8px;
+      padding: 4px;
+      margin-bottom: 16px;
+    }
+    
+    .tab {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-radius: 6px;
+      text-align: center;
+      transition: all 0.2s ease;
+    }
+    
+    .tab:hover {
+      color: var(--text-primary);
+    }
+    
+    .tab.active {
+      background: var(--primary);
+      color: white;
+      font-weight: 500;
+    }
+    
+    .tab-content {
+      display: none;
+    }
+    
+    .tab-content.active {
+      display: block;
+    }
+    
+    /* 表单 */
+    .form-group {
+      margin-bottom: 14px;
+    }
+    
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg-dark);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--text-primary);
+      transition: all 0.2s ease;
+    }
+    
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+    }
+    
+    input::placeholder {
+      color: var(--text-secondary);
+    }
+    
+    .help-text {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    
+    /* 按钮 */
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    
+    button {
+      flex: 1;
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    button.primary {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+    }
+    
+    button.primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    
+    button.secondary {
+      background: var(--bg-card);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    
+    button.secondary:hover:not(:disabled) {
+      background: var(--border);
+    }
+    
+    button.danger {
+      background: var(--danger);
+      color: white;
+    }
+    
+    button.danger:hover:not(:disabled) {
+      background: #e53e3e;
+    }
+    
+    button.success {
+      background: var(--success);
+      color: white;
+    }
+    
+    button.success:hover:not(:disabled) {
+      background: #38a169;
+    }
+    
+    /* 统计卡片 */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 16px;
+    }
+    
+    .stat-card {
+      background: var(--bg-card);
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+    
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    
+    /* 日志 */
+    .log-container {
+      background: #0d1117;
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 11px;
+    }
+    
+    .log-entry {
+      padding: 3px 0;
+      color: #8b949e;
+      border-bottom: 1px solid #21262d;
+    }
+    
+    .log-entry:last-child {
+      border-bottom: none;
+    }
+    
+    .log-entry.info { color: #58a6ff; }
+    .log-entry.success { color: #3fb950; }
+    .log-entry.warn { color: #d29922; }
+    .log-entry.error { color: #f85149; }
+    
+    .log-time {
+      color: #484f58;
+      margin-right: 8px;
+    }
+    
+    /* 滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: var(--bg-dark);
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-secondary);
+    }
+    
+    /* 开关 */
+    .switch-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    
+    .switch-label {
+      font-size: 13px;
+    }
+    
+    .switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+    }
+    
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: var(--border);
+      transition: 0.3s;
+      border-radius: 24px;
+    }
+    
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+    
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+    
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+    
+    /* 进度条 */
+    .progress-bar {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--success));
+      transition: width 0.3s ease;
+    }
+    
+    /* 提示框 */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-card);
+      color: var(--text-primary);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      z-index: 1000;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .toast.show {
+      opacity: 1;
+    }
+    
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.error { border-left: 3px solid var(--danger); }
+    .toast.warning { border-left: 3px solid var(--warning); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 头部 -->
+    <div class="header">
+      <h1>SMZDM 爆料监控器</h1>
+      <span class="version">v1.22.1</span>
+    </div>
+    
+    <!-- 状态卡片 -->
+    <div id="statusCard" class="status-card stopped">
+      <div class="status-header">
+        <span class="status-icon" id="statusIcon">⏹️</span>
+        <span class="status-text" id="statusText">监控未启动</span>
+      </div>
+      <div class="status-detail" id="statusDetail">配置好设置后点击开始监控</div>
+      <div class="progress-bar" id="progressBar" style="display:none">
+        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+      </div>
+    </div>
+    
+    <!-- 标签页 -->
+    <div class="tabs">
+      <div class="tab active" data-tab="basic">基本</div>
+      <div class="tab" data-tab="advanced">高级</div>
+      <div class="tab" data-tab="stats">统计</div>
+      <div class="tab" data-tab="logs">日志</div>
+    </div>
+    
+    <!-- 基本设置 -->
+    <div id="basic" class="tab-content active">
+      <div class="form-group">
+        <label>博主页面 URL</label>
+        <input type="text" id="targetUrl" placeholder="https://zhiyou.smzdm.com/member/xxx/baoliao/">
+        <div class="help-text">直接复制博主爆料页面的地址</div>
+      </div>
+      
+      <div class="form-group">
+        <label>企微机器人 Webhook</label>
+        <input type="text" id="webhookUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx">
+        <div class="help-text">在企业微信群中添加机器人获取</div>
+      </div>
+      
+      <div class="form-group">
+        <label>刷新间隔（秒）</label>
+        <input type="number" id="refreshInterval" value="60" min="30" max="600">
+        <div class="help-text">建议 60-120 秒，避免触发反爬</div>
+      </div>
+      
+      <div class="btn-group">
+        <button id="startBtn" class="primary">▶️ 开始监控</button>
+        <button id="stopBtn" class="secondary" disabled>⏹️ 停止</button>
+      </div>
+      
+      <div class="btn-group" style="margin-top: 10px">
+        <button id="fetchTestBtn" class="secondary" style="width:100%">🔍 测试抓取爆料</button>
+      </div>
+      
+      <!-- 爆料结果区域 -->
+      <div id="fetchResults" style="display:none; margin-top: 16px">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px">
+          <label style="margin: 0">抓取结果 (<span id="fetchCount">0</span> 条)</label>
+          <button id="closeResultsBtn" class="secondary" style="padding: 4px 10px; font-size: 11px; flex: none">关闭</button>
+        </div>
+        <div id="fetchList" class="log-container" style="max-height: 250px"></div>
+      </div>
+    </div>
+    
+    <!-- 高级设置 -->
+    <div id="advanced" class="tab-content">
+      <div class="form-group">
+        <label>反爬策略</label>
+        <select id="antiCrawlerStrategy">
+          <option value="random">随机延迟 + 模拟人类（推荐）</option>
+          <option value="conservative">保守模式（最慢最安全）</option>
+          <option value="aggressive">激进模式（快但易触发）</option>
+          <option value="adaptive">自适应模式（智能调整）</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label>验证码检测灵敏度</label>
+        <select id="captchaSensitivity">
+          <option value="high">高（误报少，可能漏报）</option>
+          <option value="medium" selected>中（平衡）</option>
+          <option value="low">低（几乎不漏报）</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label>通知格式</label>
+        <select id="notifyFormat">
+          <option value="markdown">Markdown（推荐）</option>
+          <option value="text">纯文本</option>
+        </select>
+      </div>
+      
+      <div class="form-group">
+        <label>最大重试次数</label>
+        <input type="number" id="maxRetries" value="5" min="1" max="10">
+      </div>
+      
+      <div class="btn-group">
+        <button id="testBtn" class="secondary">🧪 测试通知</button>
+        <button id="clearDataBtn" class="danger">🗑️ 清除数据</button>
+      </div>
+    </div>
+    
+    <!-- 统计 -->
+    <div id="stats" class="tab-content">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="checkCount">0</div>
+          <div class="stat-label">检测次数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="newCount">0</div>
+          <div class="stat-label">新爆料数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="captchaCount">0</div>
+          <div class="stat-label">验证码次数</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="runTime">0h</div>
+          <div class="stat-label">运行时长</div>
+        </div>
+      </div>
+      
+      <div class="form-group" style="margin-top: 16px">
+        <label>上次检测</label>
+        <input type="text" id="lastCheck" value="-" readonly>
+      </div>
+      
+      <div class="form-group">
+        <label>监控开始时间</label>
+        <input type="text" id="startTime" value="-" readonly>
+      </div>
+    </div>
+    
+    <!-- 日志 -->
+    <div id="logs" class="tab-content">
+      <div class="log-container" id="logContainer">
+        <div class="log-entry info"><span class="log-time">--:--:--</span>系统初始化中...</div>
+      </div>
+      <button id="clearLogsBtn" class="secondary" style="width:100%;margin-top:10px">清除日志</button>
+    </div>
+  </div>
+  
+  <!-- Toast 提示 -->
+  <div class="toast" id="toast"></div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

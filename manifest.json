@@ -1,0 +1,54 @@
+{
+  "manifest_version": 3,
+  "name": "SMZDM 爆料监控器",
+  "version": "1.22.2",
+  "description": "智能监控什么值得买博主爆料内容，第一时间通知你。支持反爬虫策略、验证码检测、企微机器人通知。",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "activeTab",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://zhiyou.smzdm.com/*",
+    "https://www.smzdm.com/*",
+    "https://qyapi.weixin.qq.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "SMZDM 爆料监控器"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://zhiyou.smzdm.com/member/*/baoliao/*",
+        "https://zhiyou.smzdm.com/member/*/baoliao"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "options_page": "popup.html",
+  "minimum_chrome_version": "88",
+  "offline_enabled": false,
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
