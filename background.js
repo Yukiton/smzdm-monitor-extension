@@ -3,7 +3,7 @@
 
 // ==================== 配置常量 ====================
 const CONFIG = {
-  VERSION: '1.22.2',
+  VERSION: '1.22.3',
   DEFAULT_INTERVAL: 60,
   MIN_INTERVAL: 30,
   MAX_INTERVAL: 600,
@@ -1006,15 +1006,25 @@ class SMZDMMonitor {
     const targetTabId = tabId || this.currentTabId;
     
     if (!targetTabId) {
-      throw new Error('没有可用的标签页');
+      return { hasCaptcha: false, items: [], error: '没有可用的标签页' };
     }
     
-    // 先检查标签页是否存在
+    // 先检查标签页是否存在且状态正常
     try {
       const tab = await chrome.tabs.get(targetTabId);
+      if (!tab) {
+        return { hasCaptcha: false, items: [], error: '标签页不存在' };
+      }
       this.logger.info(`标签页状态: ${tab.status}, URL: ${tab.url?.substring(0, 50)}...`);
+      
+      // 如果页面还在加载，等待加载完成
+      if (tab.status !== 'complete') {
+        this.logger.info('页面正在加载，等待完成...');
+        await this.waitForTabLoad(20000);
+      }
     } catch (e) {
-      throw new Error('标签页不存在或已关闭');
+      this.logger.error('标签页检查失败:', e.message);
+      return { hasCaptcha: false, items: [], error: '标签页不存在或已关闭: ' + e.message };
     }
     
     // 直接定义提取函数（在页面上下文中执行）
@@ -1150,12 +1160,18 @@ class SMZDMMonitor {
       timeoutId = setTimeout(() => reject(new Error('内容提取超时(30s)')), timeout);
     });
     
-    const executePromise = chrome.scripting.executeScript({
-      target: { tabId: targetTabId },
-      func: extractContent
-    });
-    
     try {
+      // 再次检查标签页是否有效
+      const tab = await chrome.tabs.get(targetTabId);
+      if (!tab || tab.status === 'unloaded') {
+        return { hasCaptcha: false, items: [], error: '标签页已关闭' };
+      }
+      
+      const executePromise = chrome.scripting.executeScript({
+        target: { tabId: targetTabId },
+        func: extractContent
+      });
+      
       const results = await Promise.race([executePromise, timeoutPromise]);
       clearTimeout(timeoutId);
       
@@ -1177,6 +1193,13 @@ class SMZDMMonitor {
       }
     } catch (e) {
       clearTimeout(timeoutId);
+      
+      // 特殊处理连接错误
+      if (e.message && e.message.includes('Could not establish connection')) {
+        this.logger.error('连接失败: 标签页可能已关闭或正在导航中');
+        return { hasCaptcha: false, items: [], error: '连接失败，标签页可能已关闭' };
+      }
+      
       this.logger.error('脚本执行失败: ' + (e.message || e));
       return { hasCaptcha: false, items: [], error: e.message };
     }
@@ -1335,25 +1358,47 @@ class SMZDMMonitor {
       });
       testTabId = tab.id;
       
-      // 等待页面加载
+      // 等待页面加载完成（使用 Promise + 超时）
+      const loadTimeout = 20000; // 20秒超时
       await new Promise((resolve) => {
-        const listener = (tabId, info) => {
-          if (tabId === testTabId && info.status === 'complete') {
+        let resolved = false;
+        const cleanup = () => {
+          if (!resolved) {
+            resolved = true;
             chrome.tabs.onUpdated.removeListener(listener);
             resolve();
           }
         };
+        
+        const listener = (tabId, info) => {
+          if (tabId === testTabId && info.status === 'complete') {
+            this.logger.info('测试页面加载完成');
+            cleanup();
+          }
+        };
+        
         chrome.tabs.onUpdated.addListener(listener);
         
         // 超时处理
         setTimeout(() => {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }, 15000);
+          this.logger.warn('页面加载超时，继续尝试提取...');
+          cleanup();
+        }, loadTimeout);
       });
       
       // 额外等待确保动态内容加载
-      await Utils.sleep(2000);
+      await Utils.sleep(3000);
+      
+      // 再次检查标签页是否存在
+      try {
+        const currentTab = await chrome.tabs.get(testTabId);
+        if (!currentTab) {
+          return { success: false, error: '标签页意外关闭', items: [] };
+        }
+        this.logger.info(`当前标签页状态: ${currentTab.status}`);
+      } catch (e) {
+        return { success: false, error: '标签页已关闭: ' + e.message, items: [] };
+      }
       
       // 执行内容提取
       const results = await this.executeContentScript(testTabId);
