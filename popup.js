@@ -1,19 +1,22 @@
 // SMZDM 爆料监控器 - Popup 控制脚本
-// 版本 1.20.0 - 最终优化版本
+// 版本 1.23.0 - 发送器抽象重构版本
 
 class PopupController {
   constructor() {
-    this.version = '1.22.8';
+    this.version = '1.23.0';
     this.settings = {};
     this.stats = {};
     this.updateInterval = null;
-    this.progressInterval = null;
+    this.progressIntervalId = null;  // 用于存储 interval ID
+    this.progressDuration = 0;        // 用于存储进度时长
     this.nextCheckTime = null;
-    
+    this.availableSenders = []; // 可用发送器列表
+
     this.init();
   }
 
   async init() {
+    await this.loadAvailableSenders();
     await this.loadSettings();
     await this.loadStats();
     await this.loadLogs(true); // 初始化时加载日志
@@ -23,34 +26,174 @@ class PopupController {
     this.addLog('info', `插件已加载 (v${this.version})`);
   }
 
+  async loadAvailableSenders() {
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'getSenders' });
+      if (response.success && response.senders) {
+        this.availableSenders = response.senders;
+        this.renderSenderTypeOptions();
+      }
+    } catch (e) {
+      this.addLog('error', '加载发送器列表失败: ' + e.message);
+    }
+  }
+
+  renderSenderTypeOptions() {
+    const select = document.getElementById('senderType');
+    select.innerHTML = this.availableSenders.map(sender =>
+      `<option value="${sender.name}">${sender.icon} ${sender.displayName}</option>`
+    ).join('');
+  }
+
   async loadSettings() {
     try {
       const result = await chrome.storage.local.get(['settings']);
-      this.settings = result.settings || {
-        targetUrl: '',
-        webhookUrl: '',
-        refreshInterval: 60,
-        antiCrawlerStrategy: 'random',
-        captchaSensitivity: 'medium',
-        maxRetries: 5,
-        notifyFormat: 'markdown',
-        debugMode: false,
-        isRunning: false
+      const data = result.settings || {};
+
+      // 数据迁移：将旧的 webhookUrl 转换为新的 sender 格式
+      let sender = data.sender || null;
+      if (!sender && data.webhookUrl) {
+        sender = {
+          type: 'wecom',
+          enabled: true,
+          config: {
+            webhookUrl: data.webhookUrl,
+            format: data.notifyFormat || 'markdown',
+            mentionAll: true
+          }
+        };
+      }
+
+      this.settings = {
+        targetUrl: data.targetUrl || '',
+        sender: sender,
+        refreshInterval: data.refreshInterval || 60,
+        antiCrawlerStrategy: data.antiCrawlerStrategy || 'random',
+        captchaSensitivity: data.captchaSensitivity || 'medium',
+        maxRetries: data.maxRetries || 5,
+        debugMode: data.debugMode || false,
+        isRunning: data.isRunning || false
       };
-      
-      // 填充表单
+
+      // 填充基本设置表单
       document.getElementById('targetUrl').value = this.settings.targetUrl || '';
-      document.getElementById('webhookUrl').value = this.settings.webhookUrl || '';
       document.getElementById('refreshInterval').value = this.settings.refreshInterval || 60;
       document.getElementById('antiCrawlerStrategy').value = this.settings.antiCrawlerStrategy || 'random';
       document.getElementById('captchaSensitivity').value = this.settings.captchaSensitivity || 'medium';
       document.getElementById('maxRetries').value = this.settings.maxRetries || 5;
-      document.getElementById('notifyFormat').value = this.settings.notifyFormat || 'markdown';
       document.getElementById('debugMode').checked = this.settings.debugMode || false;
-      
+
+      // 渲染并填充发送器配置
+      if (this.settings.sender) {
+        document.getElementById('senderEnabled').checked = this.settings.sender.enabled !== false;
+        document.getElementById('senderType').value = this.settings.sender.type || 'wecom';
+        this.renderSenderConfig(this.settings.sender.type, this.settings.sender.config);
+      } else if (this.availableSenders.length > 0) {
+        // 默认选择第一个发送器
+        const defaultType = this.availableSenders[0].name;
+        document.getElementById('senderEnabled').checked = true;
+        document.getElementById('senderType').value = defaultType;
+        this.renderSenderConfig(defaultType, {});
+      }
+
     } catch (e) {
       this.addLog('error', '加载设置失败: ' + e.message);
     }
+  }
+
+  /**
+   * 渲染发送器配置表单
+   * @param {string} senderType - 发送器类型
+   * @param {Object} config - 当前配置值
+   */
+  renderSenderConfig(senderType, config = {}) {
+    const container = document.getElementById('senderConfigContainer');
+    const senderInfo = this.availableSenders.find(s => s.name === senderType);
+
+    if (!senderInfo || !senderInfo.configFields) {
+      container.innerHTML = '<div class="help-text">该发送器无需配置</div>';
+      return;
+    }
+
+    container.innerHTML = senderInfo.configFields.map(field => {
+      const value = config[field.key] ?? field.default ?? '';
+
+      switch (field.type) {
+        case 'text':
+          return `
+            <div class="form-group">
+              <label>${field.label}</label>
+              <input type="text" id="sender_${field.key}" placeholder="${field.placeholder || ''}" value="${this.escapeHtml(value)}">
+              ${field.help ? `<div class="help-text">${field.help}</div>` : ''}
+            </div>
+          `;
+
+        case 'select':
+          return `
+            <div class="form-group">
+              <label>${field.label}</label>
+              <select id="sender_${field.key}">
+                ${field.options.map(opt => `<option value="${opt.value}" ${opt.value === value ? 'selected' : ''}>${opt.label}</option>`).join('')}
+              </select>
+            </div>
+          `;
+
+        case 'checkbox':
+          return `
+            <div class="switch-container">
+              <div>
+                <span class="switch-label">${field.label}</span>
+                ${field.help ? `<div class="help-text" style="margin-top: 2px">${field.help}</div>` : ''}
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="sender_${field.key}" ${value ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+            </div>
+          `;
+
+        default:
+          return '';
+      }
+    }).join('');
+
+    // 绑定配置变更事件
+    container.querySelectorAll('input, select').forEach(input => {
+      input.addEventListener('change', () => this.saveSettings());
+      input.addEventListener('blur', () => this.saveSettings());
+    });
+  }
+
+  /**
+   * 获取当前发送器配置
+   */
+  getSenderConfig() {
+    const senderType = document.getElementById('senderType').value;
+    const enabled = document.getElementById('senderEnabled').checked;
+    const senderInfo = this.availableSenders.find(s => s.name === senderType);
+    const config = {};
+
+    if (senderInfo && senderInfo.configFields) {
+      senderInfo.configFields.forEach(field => {
+        const elem = document.getElementById(`sender_${field.key}`);
+        if (elem) {
+          if (field.type === 'checkbox') {
+            config[field.key] = elem.checked;
+          } else {
+            config[field.key] = elem.value.trim();
+          }
+        }
+      });
+    }
+
+    return { type: senderType, enabled, config };
+  }
+
+  escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   async loadStats() {
@@ -86,18 +229,27 @@ class PopupController {
     document.getElementById('testBtn').addEventListener('click', () => this.testNotification());
     document.getElementById('clearDataBtn').addEventListener('click', () => this.clearData());
     document.getElementById('clearLogsBtn').addEventListener('click', () => this.clearLogs());
-    
+
     // 测试抓取按钮
     document.getElementById('fetchTestBtn').addEventListener('click', () => this.fetchTestItems());
     document.getElementById('closeResultsBtn').addEventListener('click', () => this.closeFetchResults());
 
+    // 发送器类型切换
+    document.getElementById('senderType').addEventListener('change', (e) => {
+      this.renderSenderConfig(e.target.value, {});
+      this.saveSettings();
+    });
+
+    // 发送器启用开关
+    document.getElementById('senderEnabled').addEventListener('change', () => this.saveSettings());
+
     // 设置变更自动保存
-    const inputs = document.querySelectorAll('input, select');
+    const inputs = document.querySelectorAll('#basic input, #basic select, #advanced input, #advanced select');
     inputs.forEach(input => {
       input.addEventListener('change', () => this.saveSettings());
       input.addEventListener('blur', () => this.saveSettings());
     });
-    
+
     // 回车键保存
     inputs.forEach(input => {
       input.addEventListener('keypress', (e) => {
@@ -117,14 +269,15 @@ class PopupController {
   }
 
   async saveSettings() {
+    const senderConfig = this.getSenderConfig();
+
     this.settings = {
       targetUrl: document.getElementById('targetUrl').value.trim(),
-      webhookUrl: document.getElementById('webhookUrl').value.trim(),
+      sender: senderConfig,
       refreshInterval: parseInt(document.getElementById('refreshInterval').value) || 60,
       antiCrawlerStrategy: document.getElementById('antiCrawlerStrategy').value,
       captchaSensitivity: document.getElementById('captchaSensitivity').value,
       maxRetries: parseInt(document.getElementById('maxRetries').value) || 5,
-      notifyFormat: document.getElementById('notifyFormat').value,
       debugMode: document.getElementById('debugMode').checked,
       isRunning: this.settings.isRunning
     };
@@ -132,7 +285,7 @@ class PopupController {
     try {
       await chrome.storage.local.set({ settings: this.settings });
       this.addLog('info', '设置已保存');
-      
+
       // 如果正在运行，更新后台设置
       if (this.settings.isRunning) {
         await chrome.runtime.sendMessage({ action: 'updateSettings', settings: this.settings });
@@ -144,28 +297,43 @@ class PopupController {
 
   async startMonitor() {
     const targetUrl = document.getElementById('targetUrl').value.trim();
-    const webhookUrl = document.getElementById('webhookUrl').value.trim();
 
     if (!targetUrl) {
       this.showToast('请输入博主页面 URL', 'warning');
       return;
     }
 
-    if (!webhookUrl) {
-      this.showToast('请输入企微机器人 Webhook 地址', 'warning');
+    // 检查发送器是否启用
+    const senderConfig = this.getSenderConfig();
+    if (!senderConfig.enabled) {
+      this.showToast('请先启用发送器', 'warning');
       return;
     }
 
-    if (!webhookUrl.includes('qyapi.weixin.qq.com')) {
-      this.showToast('Webhook 地址格式不正确', 'warning');
-      return;
+    // 验证必填配置项
+    const senderInfo = this.availableSenders.find(s => s.name === senderConfig.type);
+    if (senderInfo && senderInfo.configFields) {
+      const missingFields = [];
+      senderInfo.configFields.forEach(field => {
+        if (field.required) {
+          const value = senderConfig.config[field.key];
+          if (value === undefined || value === null || value === '') {
+            missingFields.push(field.label || field.key);
+          }
+        }
+      });
+
+      if (missingFields.length > 0) {
+        this.showToast(`请配置: ${missingFields.join(', ')}`, 'warning');
+        return;
+      }
     }
 
     await this.saveSettings();
 
     try {
       const response = await chrome.runtime.sendMessage({ action: 'startMonitor' });
-      
+
       if (response.success) {
         this.settings.isRunning = true;
         this.showToast('监控已启动', 'success');
@@ -197,20 +365,40 @@ class PopupController {
   }
 
   async testNotification() {
-    const webhookUrl = document.getElementById('webhookUrl').value.trim();
-    
-    if (!webhookUrl) {
-      this.showToast('请先输入 Webhook 地址', 'warning');
+    // 检查发送器是否启用
+    const senderConfig = this.getSenderConfig();
+    if (!senderConfig.enabled) {
+      this.showToast('请先启用发送器', 'warning');
       return;
     }
 
+    // 检查发送器必填配置
+    const senderInfo = this.availableSenders.find(s => s.name === senderConfig.type);
+
+    if (senderInfo && senderInfo.configFields) {
+      const missingFields = [];
+      senderInfo.configFields.forEach(field => {
+        if (field.required) {
+          const value = senderConfig.config[field.key];
+          if (value === undefined || value === null || value === '') {
+            missingFields.push(field.label || field.key);
+          }
+        }
+      });
+
+      if (missingFields.length > 0) {
+        this.showToast(`请配置: ${missingFields.join(', ')}`, 'warning');
+        return;
+      }
+    }
+
     this.addLog('info', '正在发送测试通知...');
-    
+
     try {
       const response = await chrome.runtime.sendMessage({ action: 'testNotification' });
-      
+
       if (response.success) {
-        this.showToast('测试通知已发送，请检查企微群', 'success');
+        this.showToast('测试通知已发送', 'success');
         this.addLog('success', '测试通知发送成功');
       } else {
         this.showToast('发送失败: ' + response.error, 'error');
@@ -291,15 +479,15 @@ class PopupController {
 
   displayFetchResults(items) {
     const resultsDiv = document.getElementById('fetchResults');
-    const listDiv = document.getElementById('fetchCount');
+    const listDiv = document.getElementById('fetchList');
     const countSpan = document.getElementById('fetchCount');
-    
+
     countSpan.textContent = items.length;
-    
+
     if (items.length === 0) {
       listDiv.innerHTML = '<div class="log-entry warn">未找到爆料内容</div>';
     } else {
-      listDiv.innerHTML = items.map((item, i) => 
+      listDiv.innerHTML = items.map((item, i) =>
         `<div class="log-entry info" style="padding: 8px 0; border-bottom: 1px solid #21262d">
           <div style="font-weight: 600; margin-bottom: 4px">${i + 1}. ${this.escapeHtml(item.title || '无标题')}</div>
           <div style="color: #d29922; font-size: 10px">💰 ${this.escapeHtml(item.price || '未知价格')}</div>
@@ -307,19 +495,12 @@ class PopupController {
         </div>`
       ).join('');
     }
-    
+
     resultsDiv.style.display = 'block';
   }
 
   closeFetchResults() {
     document.getElementById('fetchResults').style.display = 'none';
-  }
-
-  escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
   }
 
   updateUI() {
@@ -388,7 +569,7 @@ class PopupController {
 
   startProgressUpdate() {
     this.stopProgressUpdate();
-    
+
     // 直接从已加载的 stats 读取 nextCheckTime
     if (this.stats && this.stats.nextCheckTime) {
       this.nextCheckTime = this.stats.nextCheckTime;
@@ -396,37 +577,37 @@ class PopupController {
       // 如果没有，使用默认间隔
       this.nextCheckTime = Date.now() + ((this.settings.refreshInterval || 60) * 1000);
     }
-    
-    this.progressInterval = (this.settings.refreshInterval || 60) * 1000;
-    
+
+    this.progressDuration = (this.settings.refreshInterval || 60) * 1000;
+
     // 启动进度更新
     this.progressIntervalId = setInterval(() => {
       this.updateProgressBar();
     }, 1000);
-    
+
     this.updateProgressBar();
   }
 
   updateProgressBar() {
     const fill = document.getElementById('progressFill');
     const statusDetail = document.getElementById('statusDetail');
-    
+
     if (!this.nextCheckTime) {
       statusDetail.textContent = '等待检查...';
       return;
     }
-    
+
     const now = Date.now();
     const remaining = Math.max(0, this.nextCheckTime - now);
-    const progress = Math.min(100, Math.max(0, ((this.progressInterval - remaining) / this.progressInterval) * 100));
-    
+    const progress = Math.min(100, Math.max(0, ((this.progressDuration - remaining) / this.progressDuration) * 100));
+
     fill.style.width = progress + '%';
-    
+
     // 显示剩余时间
     const remainingSeconds = Math.ceil(remaining / 1000);
     const minutes = Math.floor(remainingSeconds / 60);
     const seconds = remainingSeconds % 60;
-    
+
     if (remainingSeconds > 0) {
       if (minutes > 0) {
         statusDetail.textContent = `下次检查: ${minutes}分${seconds}秒`;
@@ -451,24 +632,24 @@ class PopupController {
     // 定期更新状态和统计
     this.updateInterval = setInterval(async () => {
       await this.loadStats();
-      
+
       // 检查运行状态
       const data = await chrome.storage.local.get(['settings', 'stats']);
       if (data.settings) {
         const wasRunning = this.settings.isRunning;
         this.settings = { ...this.settings, ...data.settings };
-        
+
         if (wasRunning !== this.settings.isRunning) {
           this.updateUI();
         }
-        
+
         // 更新 nextCheckTime
         if (this.settings.isRunning && data.stats && data.stats.nextCheckTime) {
           this.nextCheckTime = data.stats.nextCheckTime;
-          this.progressInterval = (this.settings.refreshInterval || 60) * 1000;
+          this.progressDuration = (this.settings.refreshInterval || 60) * 1000;
         }
       }
-      
+
       // 更新日志
       this.loadLogs();
     }, 1000);

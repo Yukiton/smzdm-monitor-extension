@@ -1,9 +1,15 @@
 // SMZDM 爆料监控器 - Background Service Worker
-// 版本 1.20.0 - 最终优化版本
+// 版本 1.23.0 - 发送器抽象重构版本
+
+// 导入发送器模块
+importScripts('senders/sender.js', 'senders/wecom-sender.js', 'senders/index.js');
+
+// 注册发送器
+registerSender(WeComSender);
 
 // ==================== 配置常量 ====================
 const CONFIG = {
-  VERSION: '1.22.8',
+  VERSION: '1.23.0',
   DEFAULT_INTERVAL: 60,
   MIN_INTERVAL: 30,
   MAX_INTERVAL: 600,
@@ -441,155 +447,6 @@ class ContentExtractor {
   }
 }
 
-// ==================== 通知服务 ====================
-class NotificationService {
-  constructor(webhookUrl, format = 'markdown') {
-    this.webhookUrl = webhookUrl;
-    this.format = format;
-    this.queue = [];
-    this.isProcessing = false;
-    this.rateLimitDelay = 1000; // 1秒间隔
-    this.lastSendTime = 0;
-  }
-
-  async send(items) {
-    if (!this.webhookUrl) {
-      throw new Error('未配置 Webhook');
-    }
-
-    // 检查频率限制
-    const now = Date.now();
-    if (now - this.lastSendTime < this.rateLimitDelay) {
-      await Utils.sleep(this.rateLimitDelay);
-    }
-
-    const content = this.formatContent(items);
-    
-    try {
-      const response = await fetch(this.webhookUrl, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'SMZDM-Monitor/1.0'
-        },
-        body: JSON.stringify(content)
-      });
-
-      const result = await response.json();
-      this.lastSendTime = Date.now();
-      
-      if (result.errcode === 0) {
-        return { success: true };
-      } else {
-        throw new Error(result.errmsg || '发送失败');
-      }
-    } catch (e) {
-      throw e;
-    }
-  }
-
-  formatContent(items) {
-    if (this.format === 'markdown') {
-      return this.formatMarkdown(items);
-    }
-    return this.formatText(items);
-  }
-
-  formatMarkdown(items) {
-    const now = Utils.formatTime();
-    const itemsMd = items.map((item, i) => 
-      `**${i + 1}. ${item.title}**\n` +
-      `> 价格: ${item.price}\n` +
-      `> 来源: ${item.source || '未知'}\n` +
-      `> 时间: ${item.time}\n` +
-      `> [查看详情](${item.link})`
-    ).join('\n\n');
-
-    return {
-      msgtype: 'markdown',
-      markdown: {
-        content: `## 🔔 新爆料通知\n\n` +
-                 `⏰ 检测时间: ${now}\n` +
-                 `📊 新爆料数量: **${items.length}** 条\n\n` +
-                 `---\n\n${itemsMd}\n\n` +
-                 `---\n` +
-                 `*由 SMZDM 爆料监控器 自动推送*`
-      }
-    };
-  }
-
-  formatText(items) {
-    const now = Utils.formatTime();
-    const itemsText = items.map((item, i) => 
-      `${i + 1}. ${item.title}\n   价格: ${item.price}`
-    ).join('\n');
-
-    return {
-      msgtype: 'text',
-      text: {
-        content: `【新爆料通知】\n` +
-                 `检测时间: ${now}\n` +
-                 `发现 ${items.length} 条新爆料:\n\n` +
-                 `${itemsText}`
-      }
-    };
-  }
-
-  async sendCaptchaAlert() {
-    if (!this.webhookUrl) return;
-
-    const content = {
-      msgtype: 'text',
-      text: {
-        content: `⚠️【验证码警报】\n` +
-                 `检测时间: ${Utils.formatTime()}\n` +
-                 `监控页面出现验证码，请立即处理！\n\n` +
-                 `处理方式:\n` +
-                 `1. 打开监控标签页\n` +
-                 `2. 手动完成验证\n` +
-                 `3. 验证通过后监控将自动恢复`
-      },
-      mentioned_list: ['@all']
-    };
-
-    try {
-      await fetch(this.webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(content)
-      });
-    } catch (e) {
-      console.error('验证码通知发送失败:', e);
-    }
-  }
-
-  async sendTestNotification() {
-    const content = {
-      msgtype: 'text',
-      text: {
-        content: `🧪 测试通知\n` +
-                 `这是一条来自 SMZDM 爆料监控器的测试消息。\n` +
-                 `时间: ${Utils.formatTime()}\n` +
-                 `版本: v${CONFIG.VERSION}\n\n` +
-                 `✅ 通知功能正常！`
-      }
-    };
-
-    try {
-      const response = await fetch(this.webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(content)
-      });
-      
-      const result = await response.json();
-      return result.errcode === 0;
-    } catch (e) {
-      return false;
-    }
-  }
-}
-
 // ==================== 核心监控器 ====================
 class SMZDMMonitor {
   constructor() {
@@ -683,15 +540,30 @@ class SMZDMMonitor {
 
   async loadSettings() {
     const data = await this.storage.get('settings', {});
+
+    // 数据迁移：将旧的 webhookUrl 转换为新的 sender 格式
+    let sender = data.sender || null;
+    if (!sender && data.webhookUrl) {
+      sender = {
+        type: 'wecom',
+        enabled: true,
+        config: {
+          webhookUrl: data.webhookUrl,
+          format: data.notifyFormat || 'markdown'
+        }
+      };
+      // 保存迁移后的设置
+      await this.storage.set('settings', { ...data, sender, webhookUrl: undefined });
+    }
+
     this.settings = {
       targetUrl: data.targetUrl || '',
-      webhookUrl: data.webhookUrl || '',
+      sender: sender,
       refreshInterval: data.refreshInterval || CONFIG.DEFAULT_INTERVAL,
       antiCrawlerStrategy: data.antiCrawlerStrategy || 'random',
       userAgent: data.userAgent || 'edge',
       captchaSensitivity: data.captchaSensitivity || 'medium',
       maxRetries: data.maxRetries || CONFIG.MAX_RETRIES,
-      notifyFormat: data.notifyFormat || 'markdown',
       debugMode: data.debugMode || false,
       isRunning: data.isRunning || false
     };
@@ -699,10 +571,22 @@ class SMZDMMonitor {
     // 初始化策略组件
     this.antiCrawler = new AntiCrawlerStrategy(this.settings);
     this.captchaDetector = new CaptchaDetector(this.settings.captchaSensitivity);
-    
-    if (this.settings.webhookUrl) {
-      this.notifier = new NotificationService(this.settings.webhookUrl, this.settings.notifyFormat);
+
+    // 初始化发送器
+    this.sender = null;
+    if (this.settings.sender && this.settings.sender.enabled) {
+      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
     }
+  }
+
+  /**
+   * 获取当前发送器
+   */
+  getSender() {
+    if (!this.sender && this.settings.sender && this.settings.sender.enabled) {
+      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
+    }
+    return this.sender;
   }
 
   async loadStats() {
@@ -820,7 +704,11 @@ class SMZDMMonitor {
           const fetchResult = await this.fetchTestItems(message.url);
           sendResponse(fetchResult);
           break;
-          
+
+        case 'getSenders':
+          sendResponse({ success: true, senders: getAllSenders() });
+          break;
+
         default:
           sendResponse({ success: false, error: '未知操作' });
       }
@@ -834,13 +722,21 @@ class SMZDMMonitor {
     try {
       // 重新加载设置以确保使用最新配置
       await this.loadSettings();
-      
+
       // 验证设置
       if (!this.settings.targetUrl) {
         return { success: false, error: '未设置目标 URL' };
       }
-      if (!this.settings.webhookUrl) {
-        return { success: false, error: '未设置 Webhook' };
+
+      // 验证发送器配置
+      const sender = this.getSender();
+      if (!sender) {
+        return { success: false, error: '未配置发送器' };
+      }
+
+      const validation = sender.validateConfig();
+      if (!validation.success) {
+        return { success: false, error: validation.error };
       }
 
       // 创建或获取标签页
@@ -1251,52 +1147,33 @@ class SMZDMMonitor {
   }
 
   async sendNotification(items) {
-    if (!this.notifier) {
-      this.notifier = new NotificationService(this.settings.webhookUrl, this.settings.notifyFormat);
+    const sender = this.getSender();
+    if (!sender) {
+      this.logger.error('未配置发送器');
+      return;
     }
-    
+
     try {
-      await this.notifier.send(items);
-      this.logger.success('通知发送成功');
+      const result = await sender.send(items);
+      if (result.success) {
+        this.logger.success('通知发送成功');
+      } else {
+        this.logger.error('通知发送失败:', result.error);
+      }
     } catch (e) {
-      this.logger.error('通知发送失败:', e.message);
+      this.logger.error('通知发送异常:', e.message);
     }
   }
 
   async sendDebugNotification(item) {
-    if (!this.settings.webhookUrl) return;
-    
-    const content = {
-      msgtype: 'markdown',
-      markdown: {
-        content: `## 🐛 调试模式推送\n\n` +
-                 `⏰ 检测时间: ${Utils.formatTime()}\n` +
-                 `> 此消息为调试模式自动推送\n\n` +
-                 `---\n\n` +
-                 `**${item.title}**\n` +
-                 `> 💰 价格: ${item.price}\n` +
-                 `> ⏰ 时间: ${item.time}\n` +
-                 `> 🔗 [查看详情](${item.link})\n\n` +
-                 `---\n` +
-                 `*SMZDM 爆料监控器 调试模式*`
-      }
-    };
+    const sender = this.getSender();
+    if (!sender) return;
 
-    try {
-      const response = await fetch(this.settings.webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(content)
-      });
-      
-      const result = await response.json();
-      if (result.errcode === 0) {
-        this.logger.success('[调试] 通知发送成功');
-      } else {
-        this.logger.error('[调试] 通知发送失败:', result.errmsg);
-      }
-    } catch (e) {
-      this.logger.error('[调试] 通知发送异常:', e.message);
+    const result = await sender.sendDebug(item);
+    if (result.success) {
+      this.logger.success('[调试] 通知发送成功');
+    } else {
+      this.logger.error('[调试] 通知发送失败:', result.error);
     }
   }
 
@@ -1333,17 +1210,18 @@ class SMZDMMonitor {
 
   async onCaptchaDetected() {
     this.logger.warn('⚠️ 检测到验证码！');
-    
+
     this.stats.captchaCount++;
     await this.saveStats();
     await this.storage.set('captchaDetected', true);
-    
+
     // 停止自动检查
     chrome.alarms.clear('checkUpdate');
-    
+
     // 发送警报
-    if (this.notifier) {
-      await this.notifier.sendCaptchaAlert();
+    const sender = this.getSender();
+    if (sender) {
+      await sender.sendCaptchaAlert();
     }
   }
 
@@ -1360,27 +1238,29 @@ class SMZDMMonitor {
   }
 
   async testNotification() {
-    if (!this.settings.webhookUrl) {
-      return { success: false, error: '未配置 Webhook' };
+    const sender = this.getSender();
+    if (!sender) {
+      return { success: false, error: '未配置发送器' };
     }
-    
-    const notifier = new NotificationService(this.settings.webhookUrl, this.settings.notifyFormat);
-    const success = await notifier.sendTestNotification();
-    
-    return success 
-      ? { success: true } 
-      : { success: false, error: '发送失败' };
+
+    const result = await sender.sendTest();
+    return result;
   }
 
   async updateSettings(newSettings) {
     this.settings = { ...this.settings, ...newSettings };
     await this.storage.set('settings', this.settings);
-    
+
     // 更新组件
     this.antiCrawler = new AntiCrawlerStrategy(this.settings);
     this.captchaDetector = new CaptchaDetector(this.settings.captchaSensitivity);
-    this.notifier = new NotificationService(this.settings.webhookUrl, this.settings.notifyFormat);
-    
+
+    // 更新发送器
+    this.sender = null;
+    if (this.settings.sender && this.settings.sender.enabled) {
+      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
+    }
+
     this.logger.info('设置已更新');
   }
 
@@ -1400,12 +1280,13 @@ class SMZDMMonitor {
 
   async fetchTestItems(url) {
     let testTabId = null;
-    
+
     try {
-      // 检查 webhook 配置
+      // 检查发送器配置
       await this.loadSettings();
-      if (!this.settings.webhookUrl) {
-        return { success: false, error: '未配置企微机器人 Webhook', items: [] };
+      const sender = this.getSender();
+      if (!sender) {
+        return { success: false, error: '未配置发送器', items: [] };
       }
       
       // 创建临时标签页
@@ -1495,41 +1376,14 @@ class SMZDMMonitor {
   }
 
   async sendTestFetchNotification(items) {
-    const notifier = new NotificationService(this.settings.webhookUrl, this.settings.notifyFormat);
-    
-    const content = {
-      msgtype: 'markdown',
-      markdown: {
-        content: `## 🧪 测试抓取结果\n\n` +
-                 `⏰ 抓取时间: ${Utils.formatTime()}\n` +
-                 `📊 抓取数量: **${items.length}** 条\n\n` +
-                 `---\n\n` +
-                 items.slice(0, 10).map((item, i) => 
-                   `**${i + 1}. ${item.title}**\n` +
-                   `> 💰 价格: ${item.price}\n` +
-                   `> ⏰ 时间: ${item.time}\n` +
-                   `> 🔗 [查看详情](${item.link})`
-                 ).join('\n\n') +
-                 (items.length > 10 ? `\n\n... 还有 ${items.length - 10} 条` : '') +
-                 `\n\n---\n*由 SMZDM 爆料监控器 测试抓取推送*`
-      }
-    };
+    const sender = this.getSender();
+    if (!sender) return;
 
-    try {
-      const response = await fetch(this.settings.webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(content)
-      });
-      
-      const result = await response.json();
-      if (result.errcode === 0) {
-        this.logger.success('测试抓取通知已发送到企微');
-      } else {
-        this.logger.error('通知发送失败:', result.errmsg);
-      }
-    } catch (e) {
-      this.logger.error('通知发送异常:', e.message);
+    const result = await sender.sendFetchResult(items);
+    if (result.success) {
+      this.logger.success('测试抓取通知已发送');
+    } else {
+      this.logger.error('通知发送失败:', result.error);
     }
   }
 }

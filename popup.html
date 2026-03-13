@@ -441,7 +441,7 @@
     <!-- 头部 -->
     <div class="header">
       <h1>SMZDM 爆料监控器</h1>
-      <span class="version">v1.22.8</span>
+      <span class="version">v1.23.0</span>
     </div>
     
     <!-- 状态卡片 -->
@@ -459,6 +459,7 @@
     <!-- 标签页 -->
     <div class="tabs">
       <div class="tab active" data-tab="basic">基本</div>
+      <div class="tab" data-tab="sender">发送器</div>
       <div class="tab" data-tab="advanced">高级</div>
       <div class="tab" data-tab="stats">统计</div>
       <div class="tab" data-tab="logs">日志</div>
@@ -471,19 +472,13 @@
         <input type="text" id="targetUrl" placeholder="https://zhiyou.smzdm.com/member/xxx/baoliao/">
         <div class="help-text">直接复制博主爆料页面的地址</div>
       </div>
-      
-      <div class="form-group">
-        <label>企微机器人 Webhook</label>
-        <input type="text" id="webhookUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx">
-        <div class="help-text">在企业微信群中添加机器人获取</div>
-      </div>
-      
+
       <div class="form-group">
         <label>刷新间隔（秒）</label>
         <input type="number" id="refreshInterval" value="60" min="30" max="600">
         <div class="help-text">建议 60-120 秒，避免触发反爬</div>
       </div>
-      
+
       <!-- Debug 模式开关 -->
       <div class="switch-container">
         <div>
@@ -495,16 +490,16 @@
           <span class="slider"></span>
         </label>
       </div>
-      
+
       <div class="btn-group">
         <button id="startBtn" class="primary">▶️ 开始监控</button>
         <button id="stopBtn" class="secondary" disabled>⏹️ 停止</button>
       </div>
-      
+
       <div class="btn-group" style="margin-top: 10px">
         <button id="fetchTestBtn" class="secondary" style="width:100%">🔍 测试抓取爆料</button>
       </div>
-      
+
       <!-- 爆料结果区域 -->
       <div id="fetchResults" style="display:none; margin-top: 16px">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px">
@@ -512,6 +507,38 @@
           <button id="closeResultsBtn" class="secondary" style="padding: 4px 10px; font-size: 11px; flex: none">关闭</button>
         </div>
         <div id="fetchList" class="log-container" style="max-height: 250px"></div>
+      </div>
+    </div>
+
+    <!-- 发送器设置 -->
+    <div id="sender" class="tab-content">
+      <!-- 发送器启用开关 -->
+      <div class="switch-container">
+        <div>
+          <span class="switch-label">📤 启用发送器</span>
+          <div class="help-text" style="margin-top: 2px">开启后将发送通知到配置的渠道</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="senderEnabled" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="form-group">
+        <label>发送器类型</label>
+        <select id="senderType">
+          <!-- 动态填充 -->
+        </select>
+        <div class="help-text">选择通知发送渠道</div>
+      </div>
+
+      <!-- 动态配置区域 -->
+      <div id="senderConfigContainer">
+        <!-- 由 JS 动态渲染 -->
+      </div>
+
+      <div class="btn-group">
+        <button id="testBtn" class="secondary">🧪 测试发送</button>
       </div>
     </div>
     
@@ -526,7 +553,7 @@
           <option value="adaptive">自适应模式（智能调整）</option>
         </select>
       </div>
-      
+
       <div class="form-group">
         <label>验证码检测灵敏度</label>
         <select id="captchaSensitivity">
@@ -535,22 +562,13 @@
           <option value="low">低（几乎不漏报）</option>
         </select>
       </div>
-      
-      <div class="form-group">
-        <label>通知格式</label>
-        <select id="notifyFormat">
-          <option value="markdown">Markdown（推荐）</option>
-          <option value="text">纯文本</option>
-        </select>
-      </div>
-      
+
       <div class="form-group">
         <label>最大重试次数</label>
         <input type="number" id="maxRetries" value="5" min="1" max="10">
       </div>
-      
+
       <div class="btn-group">
-        <button id="testBtn" class="secondary">🧪 测试通知</button>
         <button id="clearDataBtn" class="danger">🗑️ 清除数据</button>
       </div>
     </div>

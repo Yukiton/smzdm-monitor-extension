@@ -1,12 +1,12 @@
 // SMZDM 爆料监控器 - Content Script
-// 版本 1.20.0 - 最终优化版本
+// 版本 1.23.0 - 发送器抽象重构版本
 
 (function() {
   'use strict';
 
   // ==================== 配置 ====================
   const CONFIG = {
-    VERSION: '1.22.8',
+    VERSION: '1.23.0',
     CHECK_INTERVAL: 30000,  // 改为 30 秒检测一次
     CAPTCHA_SELECTORS: [
       '.geetest',
