@@ -1,15 +1,16 @@
 // SMZDM 爆料监控器 - Background Service Worker
-// 版本 1.23.0 - 发送器抽象重构版本
+// 版本 1.23.0 - 多发送器支持版本
 
 // 导入发送器模块
-importScripts('senders/sender.js', 'senders/wecom-sender.js', 'senders/index.js');
+importScripts('senders/sender.js', 'senders/wecom-sender.js', 'senders/resend-sender.js', 'senders/index.js');
 
 // 注册发送器
 registerSender(WeComSender);
+registerSender(ResendSender);
 
 // ==================== 配置常量 ====================
 const CONFIG = {
-  VERSION: '1.23.0',
+  VERSION: chrome.runtime.getManifest().version,
   DEFAULT_INTERVAL: 60,
   MIN_INTERVAL: 30,
   MAX_INTERVAL: 600,
@@ -470,32 +471,33 @@ class SMZDMMonitor {
     this.captchaDetector = null;
     this.contentExtractor = null;
     this.notifier = null;
-    
+
+    // 立即设置消息监听器，确保能响应 popup 消息
+    this.setupMessageListener();
+
+    // 异步初始化其他组件
     this.init();
   }
 
   async init() {
     // 加载设置
     await this.loadSettings();
-    
+
     // 加载统计
     await this.loadStats();
-    
+
     // 加载日志
     await this.logger.load();
-    
-    // 监听消息
-    this.setupMessageListener();
-    
+
     // 监听定时器
     this.setupAlarmListener();
-    
+
     // 监听标签页关闭
     this.setupTabListener();
-    
+
     // 恢复监控状态
     await this.restoreMonitorState();
-    
+
     this.logger.info(`后台服务已启动 (v${CONFIG.VERSION})`);
   }
 
@@ -541,24 +543,47 @@ class SMZDMMonitor {
   async loadSettings() {
     const data = await this.storage.get('settings', {});
 
-    // 数据迁移：将旧的 webhookUrl 转换为新的 sender 格式
-    let sender = data.sender || null;
-    if (!sender && data.webhookUrl) {
-      sender = {
+    // 数据迁移：将旧的单一 webhookUrl 转换为新的 senders 格式
+    let senders = data.senders || null;
+    let needsMigration = false;
+
+    if (!senders && data.sender) {
+      // 迁移 v1.23.x 的 sender 格式
+      senders = [{
+        id: 'migrated-' + Date.now(),
+        type: data.sender.type || 'wecom',
+        enabled: data.sender.enabled !== false,
+        config: data.sender.config || {}
+      }];
+      needsMigration = true;
+    } else if (!senders && data.webhookUrl) {
+      // 迁移更早版本的 webhookUrl 格式
+      senders = [{
+        id: 'migrated-legacy-' + Date.now(),
         type: 'wecom',
         enabled: true,
         config: {
           webhookUrl: data.webhookUrl,
-          format: data.notifyFormat || 'markdown'
+          format: data.notifyFormat || 'markdown',
+          mentionAll: true
         }
-      };
-      // 保存迁移后的设置
-      await this.storage.set('settings', { ...data, sender, webhookUrl: undefined });
+      }];
+      needsMigration = true;
+    }
+
+    // 保存迁移后的设置，清理旧字段
+    if (needsMigration) {
+      const cleanedData = { ...data, senders };
+      delete cleanedData.sender;
+      delete cleanedData.webhookUrl;
+      delete cleanedData.notifyFormat;
+      await this.storage.set('settings', cleanedData);
+      this.logger.info('数据迁移完成，已清理旧配置字段');
     }
 
     this.settings = {
       targetUrl: data.targetUrl || '',
-      sender: sender,
+      senders: senders || [],
       refreshInterval: data.refreshInterval || CONFIG.DEFAULT_INTERVAL,
       antiCrawlerStrategy: data.antiCrawlerStrategy || 'random',
       userAgent: data.userAgent || 'edge',
@@ -571,22 +596,64 @@ class SMZDMMonitor {
     // 初始化策略组件
     this.antiCrawler = new AntiCrawlerStrategy(this.settings);
     this.captchaDetector = new CaptchaDetector(this.settings.captchaSensitivity);
-
-    // 初始化发送器
-    this.sender = null;
-    if (this.settings.sender && this.settings.sender.enabled) {
-      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
-    }
   }
 
   /**
-   * 获取当前发送器
+   * 获取所有启用的发送器实例
+   * @returns {Array<{sender: BaseSender, id: string, displayName: string}>}
    */
-  getSender() {
-    if (!this.sender && this.settings.sender && this.settings.sender.enabled) {
-      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
+  getEnabledSenders() {
+    if (!this.settings.senders || this.settings.senders.length === 0) {
+      return [];
     }
-    return this.sender;
+
+    return this.settings.senders
+      .filter(s => s.enabled)
+      .map(s => {
+        const sender = createSender(s.type, s.config);
+        if (sender) {
+          return {
+            sender,
+            id: s.id,
+            displayName: sender.constructor.displayName
+          };
+        }
+        // 记录未知发送器类型的警告
+        if (this.logger) {
+          this.logger.warn(`未知的发送器类型: ${s.type}，请检查发送器是否已正确注册`);
+        }
+        return null;
+      })
+      .filter(s => s !== null);
+  }
+
+  /**
+   * 验证发送器配置
+   * @returns {{valid: boolean, errors: Array<string>}}
+   */
+  validateSenders() {
+    const errors = [];
+
+    if (!this.settings.senders || this.settings.senders.length === 0) {
+      return { valid: false, errors: ['未配置发送器'] };
+    }
+
+    this.settings.senders.forEach((senderConfig, index) => {
+      if (senderConfig.enabled) {
+        const sender = createSender(senderConfig.type, senderConfig.config);
+        if (!sender) {
+          errors.push(`发送器 ${index + 1}: 未知类型 "${senderConfig.type}"`);
+        } else {
+          const validation = sender.validateConfig();
+          if (!validation.success) {
+            const displayName = sender.constructor.displayName;
+            errors.push(`[${displayName}] ${validation.error}`);
+          }
+        }
+      }
+    });
+
+    return { valid: errors.length === 0, errors };
   }
 
   async loadStats() {
@@ -623,8 +690,9 @@ class SMZDMMonitor {
   setupTabListener() {
     chrome.tabs.onRemoved.addListener((tabId) => {
       if (tabId === this.currentTabId) {
-        this.logger.warn('监控标签页已关闭');
+        this.logger.warn('监控标签页已关闭，下次检查时将重建');
         this.currentTabId = null;
+        // 标记需要重建，但不停止监控
       }
     });
   }
@@ -633,12 +701,23 @@ class SMZDMMonitor {
     try {
       switch (message.action) {
         case 'startMonitor':
-          const result = await this.startMonitor();
-          sendResponse(result);
+          // 立即返回响应，然后异步启动
+          sendResponse({ success: true });
+          this.startMonitor().catch(e => {
+            this.logger.error('启动失败:', e.message);
+            this.isRunning = false;
+            this.storage.set('settings', { ...this.settings, isRunning: false });
+          });
           break;
           
         case 'stopMonitor':
-          await this.stopMonitor();
+          // 立即停止并返回响应
+          this.isRunning = false;
+          this.isPaused = false;
+          this.stats.nextCheckTime = null;
+          chrome.alarms.clear('checkUpdate');
+          this.storage.set('settings', { ...this.settings, isRunning: false });
+          this.logger.info('监控已停止');
           sendResponse({ success: true });
           break;
           
@@ -701,7 +780,7 @@ class SMZDMMonitor {
           break;
           
         case 'fetchTestItems':
-          const fetchResult = await this.fetchTestItems(message.url);
+          const fetchResult = await this.fetchTestItems(message.url, message.options || {});
           sendResponse(fetchResult);
           break;
 
@@ -720,52 +799,62 @@ class SMZDMMonitor {
 
   async startMonitor() {
     try {
+      // 立即更新状态
+      this.isRunning = true;
+      this.isPaused = false;
+      this.stats.startTime = Date.now();
+      await this.storage.set('settings', { ...this.settings, isRunning: true });
+
       // 重新加载设置以确保使用最新配置
       await this.loadSettings();
 
       // 验证设置
       if (!this.settings.targetUrl) {
-        return { success: false, error: '未设置目标 URL' };
+        this.isRunning = false;
+        await this.storage.set('settings', { ...this.settings, isRunning: false });
+        this.logger.error('启动失败: 未设置目标 URL');
+        return;
       }
 
       // 验证发送器配置
-      const sender = this.getSender();
-      if (!sender) {
-        return { success: false, error: '未配置发送器' };
+      const validation = this.validateSenders();
+      if (!validation.valid) {
+        this.isRunning = false;
+        await this.storage.set('settings', { ...this.settings, isRunning: false });
+        this.logger.error('启动失败:', validation.errors.join('; '));
+        return;
       }
 
-      const validation = sender.validateConfig();
-      if (!validation.success) {
-        return { success: false, error: validation.error };
+      // 检查是否有启用的发送器
+      const enabledSenders = this.getEnabledSenders();
+      if (enabledSenders.length === 0) {
+        this.isRunning = false;
+        await this.storage.set('settings', { ...this.settings, isRunning: false });
+        this.logger.error('启动失败: 没有启用的发送器');
+        return;
       }
 
       // 创建或获取标签页
       this.currentTabId = await this.getOrCreateTab();
-      
+
       // 等待页面加载完成
       this.logger.info('等待页面加载...');
       await this.waitForTabLoad();
-      
-      // 更新状态
-      this.isRunning = true;
-      this.isPaused = false;
-      this.stats.startTime = Date.now();
-      
-      await this.storage.set('settings', { ...this.settings, isRunning: true });
+
       await this.storage.set('captchaDetected', false);
-      
+
       // 启动定时检查
       await this.scheduleNextCheck();
-      
+
       // 延迟后执行首次检查
       setTimeout(() => this.performCheck(), 3000);
-      
-      this.logger.success('监控已启动', { url: this.settings.targetUrl });
-      return { success: true };
-      
+
+      this.logger.success('监控已启动', { url: this.settings.targetUrl, senders: enabledSenders.length });
+
     } catch (e) {
       this.logger.error('启动失败:', e.message);
-      return { success: false, error: e.message };
+      this.isRunning = false;
+      await this.storage.set('settings', { ...this.settings, isRunning: false });
     }
   }
 
@@ -823,68 +912,70 @@ class SMZDMMonitor {
     }
 
     this.logger.info('开始检查更新...');
-    
-    let checkTabId = null;
-    
+
     try {
-      // 每次检查创建新标签页（避免休眠问题）
-      this.logger.info('创建临时检查标签页...');
-      const tab = await chrome.tabs.create({
-        url: this.settings.targetUrl,
-        active: false
-      });
-      checkTabId = tab.id;
-      
-      // 等待页面加载完成
-      await this.waitForTabLoad(checkTabId, 30000);
-      
-      // 额外等待动态内容
-      await Utils.sleep(2000);
-      
+      // 检查是否需要创建或重建标签页
+      let needReload = false;
+
+      if (!this.currentTabId) {
+        // 没有标签页，创建新的
+        this.logger.info('创建监控标签页...');
+        const tab = await chrome.tabs.create({
+          url: this.settings.targetUrl,
+          active: false
+        });
+        this.currentTabId = tab.id;
+        // 等待新页面加载完成
+        await this.waitForTabLoad(this.currentTabId, 30000);
+        await Utils.sleep(2000); // 等待动态内容
+      } else {
+        // 检查标签页是否还存在
+        try {
+          const tab = await chrome.tabs.get(this.currentTabId);
+          if (tab) {
+            // 标签页存在，刷新页面
+            this.logger.info('刷新监控标签页...');
+            await chrome.tabs.reload(this.currentTabId);
+            await this.waitForTabLoad(this.currentTabId, 30000);
+            await Utils.sleep(2000);
+          }
+        } catch (e) {
+          // 标签页不存在，重新创建
+          this.logger.info('监控标签页已不存在，重新创建...');
+          const tab = await chrome.tabs.create({
+            url: this.settings.targetUrl,
+            active: false
+          });
+          this.currentTabId = tab.id;
+          await this.waitForTabLoad(this.currentTabId, 30000);
+          await Utils.sleep(2000);
+        }
+      }
+
       // 更新统计
       this.stats.checkCount++;
       this.stats.lastCheck = Date.now();
       await this.saveStats();
-      
+
       // 执行内容脚本
       this.logger.info('正在提取页面内容...');
-      const results = await this.executeContentScript(checkTabId);
+      const results = await this.executeContentScript();
       this.logger.info(`内容提取完成: ${results.items?.length || 0} 条, 验证码: ${results.hasCaptcha}`);
-      
-      // 关闭临时标签页
-      if (checkTabId) {
-        try {
-          await chrome.tabs.remove(checkTabId);
-          this.logger.info('临时标签页已关闭');
-        } catch (e) {
-          // 忽略关闭错误
-        }
-        checkTabId = null;
-      }
-      
+
       if (results.hasCaptcha) {
         await this.onCaptchaDetected();
         await this.scheduleNextCheck();
         return;
       }
-      
+
       if (results.items && results.items.length > 0) {
         await this.processContent(results.items);
       }
-      
+
     } catch (e) {
       this.logger.error('检查失败:', e.message);
-      
-      // 确保关闭临时标签页
-      if (checkTabId) {
-        try {
-          await chrome.tabs.remove(checkTabId);
-        } catch (err) {
-          // 忽略
-        }
-      }
     }
-    
+
     // 调度下次检查
     await this.scheduleNextCheck();
   }
@@ -1136,7 +1227,7 @@ class SMZDMMonitor {
       await this.sendNotification(newItems);
     } else if (this.settings.debugMode) {
       // 调试模式：即使没有新爆料，也发送第一条
-      this.logger.info('[调试模式] 发送第一条爆料到企微');
+      this.logger.info('[调试模式] 发送第一条爆料到所有发送器');
       await this.sendDebugNotification(items[0]);
     } else {
       this.logger.info('内容无变化');
@@ -1147,34 +1238,79 @@ class SMZDMMonitor {
   }
 
   async sendNotification(items) {
-    const sender = this.getSender();
-    if (!sender) {
-      this.logger.error('未配置发送器');
+    const senderInfos = this.getEnabledSenders();
+    if (senderInfos.length === 0) {
+      this.logger.error('没有可用的发送器');
       return;
     }
 
-    try {
-      const result = await sender.send(items);
-      if (result.success) {
-        this.logger.success('通知发送成功');
+    this.logger.info(`正在向 ${senderInfos.length} 个发送器发送通知...`);
+
+    // 并行发送到所有启用的发送器
+    const results = await Promise.allSettled(
+      senderInfos.map(async ({ sender, displayName }) => {
+        try {
+          const result = await sender.send(items);
+          return { displayName, result };
+        } catch (e) {
+          return { displayName, error: e.message };
+        }
+      })
+    );
+
+    // 记录每个发送器的结果
+    let successCount = 0;
+    results.forEach((settledResult) => {
+      if (settledResult.status === 'fulfilled') {
+        const { displayName, result, error } = settledResult.value;
+        if (result && result.success) {
+          this.logger.success(`[${displayName}] 通知发送成功`);
+          successCount++;
+        } else {
+          const errorMsg = result?.error || error || '未知错误';
+          this.logger.error(`[${displayName}] 通知发送失败: ${errorMsg}`);
+        }
       } else {
-        this.logger.error('通知发送失败:', result.error);
+        this.logger.error(`[发送器] 通知发送异常: ${settledResult.reason?.message || settledResult.reason}`);
       }
-    } catch (e) {
-      this.logger.error('通知发送异常:', e.message);
+    });
+
+    if (successCount === 0) {
+      this.logger.error('所有发送器都发送失败');
+    } else if (successCount < senderInfos.length) {
+      this.logger.warn(`${successCount}/${senderInfos.length} 个发送器发送成功`);
     }
   }
 
   async sendDebugNotification(item) {
-    const sender = this.getSender();
-    if (!sender) return;
+    const senderInfos = this.getEnabledSenders();
+    if (senderInfos.length === 0) return;
 
-    const result = await sender.sendDebug(item);
-    if (result.success) {
-      this.logger.success('[调试] 通知发送成功');
-    } else {
-      this.logger.error('[调试] 通知发送失败:', result.error);
-    }
+    // 并行发送调试通知
+    const results = await Promise.allSettled(
+      senderInfos.map(async ({ sender, displayName }) => {
+        try {
+          const result = await sender.sendDebug(item);
+          return { displayName, result };
+        } catch (e) {
+          return { displayName, error: e.message };
+        }
+      })
+    );
+
+    results.forEach((settledResult) => {
+      if (settledResult.status === 'fulfilled') {
+        const { displayName, result, error } = settledResult.value;
+        if (result && result.success) {
+          this.logger.success(`[调试][${displayName}] 通知发送成功`);
+        } else {
+          const errorMsg = result?.error || error || '未知错误';
+          this.logger.error(`[调试][${displayName}] 通知发送失败: ${errorMsg}`);
+        }
+      } else {
+        this.logger.error(`[调试][发送器] 通知发送异常: ${settledResult.reason?.message || settledResult.reason}`);
+      }
+    });
   }
 
   async refreshTab() {
@@ -1218,10 +1354,33 @@ class SMZDMMonitor {
     // 停止自动检查
     chrome.alarms.clear('checkUpdate');
 
-    // 发送警报
-    const sender = this.getSender();
-    if (sender) {
-      await sender.sendCaptchaAlert();
+    // 并行发送警报到所有启用的发送器
+    const senderInfos = this.getEnabledSenders();
+    if (senderInfos.length > 0) {
+      const results = await Promise.allSettled(
+        senderInfos.map(async ({ sender, displayName }) => {
+          try {
+            const result = await sender.sendCaptchaAlert();
+            return { displayName, result };
+          } catch (e) {
+            return { displayName, error: e.message };
+          }
+        })
+      );
+
+      results.forEach((settledResult) => {
+        if (settledResult.status === 'fulfilled') {
+          const { displayName, result, error } = settledResult.value;
+          if (result && result.success) {
+            this.logger.success(`[${displayName}] 验证码警报发送成功`);
+          } else {
+            const errorMsg = result?.error || error || '未知错误';
+            this.logger.error(`[${displayName}] 验证码警报发送失败: ${errorMsg}`);
+          }
+        } else {
+          this.logger.error(`[发送器] 验证码警报发送异常: ${settledResult.reason?.message || settledResult.reason}`);
+        }
+      });
     }
   }
 
@@ -1238,13 +1397,52 @@ class SMZDMMonitor {
   }
 
   async testNotification() {
-    const sender = this.getSender();
-    if (!sender) {
-      return { success: false, error: '未配置发送器' };
+    const senderInfos = this.getEnabledSenders();
+    if (senderInfos.length === 0) {
+      return { success: false, error: '没有启用的发送器' };
     }
 
-    const result = await sender.sendTest();
-    return result;
+    // 并行发送测试通知
+    const results = await Promise.allSettled(
+      senderInfos.map(async ({ sender, displayName }) => {
+        try {
+          const result = await sender.sendTest();
+          return { displayName, result };
+        } catch (e) {
+          return { displayName, error: e.message };
+        }
+      })
+    );
+
+    // 检查结果
+    let successCount = 0;
+    const errors = [];
+
+    results.forEach((settledResult) => {
+      if (settledResult.status === 'fulfilled') {
+        const { displayName, result, error } = settledResult.value;
+        if (result && result.success) {
+          successCount++;
+          this.logger.success(`[${displayName}] 测试通知发送成功`);
+        } else {
+          const errorMsg = result?.error || error || '未知错误';
+          errors.push(`[${displayName}] ${errorMsg}`);
+          this.logger.error(`[${displayName}] 测试通知发送失败: ${errorMsg}`);
+        }
+      } else {
+        const errorMsg = settledResult.reason?.message || settledResult.reason || '未知异常';
+        errors.push(`[发送器] ${errorMsg}`);
+        this.logger.error(`[发送器] 测试通知发送异常: ${errorMsg}`);
+      }
+    });
+
+    if (successCount === senderInfos.length) {
+      return { success: true };
+    } else if (successCount > 0) {
+      return { success: true, warning: `${successCount}/${senderInfos.length} 个发送器发送成功` };
+    } else {
+      return { success: false, error: errors.join('; ') };
+    }
   }
 
   async updateSettings(newSettings) {
@@ -1254,12 +1452,6 @@ class SMZDMMonitor {
     // 更新组件
     this.antiCrawler = new AntiCrawlerStrategy(this.settings);
     this.captchaDetector = new CaptchaDetector(this.settings.captchaSensitivity);
-
-    // 更新发送器
-    this.sender = null;
-    if (this.settings.sender && this.settings.sender.enabled) {
-      this.sender = createSender(this.settings.sender.type, this.settings.sender.config);
-    }
 
     this.logger.info('设置已更新');
   }
@@ -1278,15 +1470,20 @@ class SMZDMMonitor {
     this.logger.info('数据已清除');
   }
 
-  async fetchTestItems(url) {
+  async fetchTestItems(url, options = {}) {
     let testTabId = null;
 
     try {
-      // 检查发送器配置
+      // 检查设置
       await this.loadSettings();
-      const sender = this.getSender();
-      if (!sender) {
-        return { success: false, error: '未配置发送器', items: [] };
+
+      // 检查是否需要发送通知
+      const shouldSendNotification = options.sendNotification !== false;
+      const senderInfos = shouldSendNotification ? this.getEnabledSenders() : [];
+
+      // 如果需要发送通知但没有发送器，记录警告但不阻止抓取
+      if (shouldSendNotification && senderInfos.length === 0) {
+        this.logger.warn('没有启用的发送器，将只显示抓取结果而不发送通知');
       }
       
       // 创建临时标签页
@@ -1352,9 +1549,9 @@ class SMZDMMonitor {
       }
       
       const items = results.items || [];
-      
-      // 发送通知到企微
-      if (items.length > 0) {
+
+      // 发送通知到所有发送器（仅当选项启用且有发送器时）
+      if (shouldSendNotification && senderInfos.length > 0 && items.length > 0) {
         await this.sendTestFetchNotification(items);
       }
       
@@ -1376,14 +1573,39 @@ class SMZDMMonitor {
   }
 
   async sendTestFetchNotification(items) {
-    const sender = this.getSender();
-    if (!sender) return;
+    const senderInfos = this.getEnabledSenders();
+    if (senderInfos.length === 0) return;
 
-    const result = await sender.sendFetchResult(items);
-    if (result.success) {
-      this.logger.success('测试抓取通知已发送');
-    } else {
-      this.logger.error('通知发送失败:', result.error);
+    // 并行发送测试抓取结果
+    const results = await Promise.allSettled(
+      senderInfos.map(async ({ sender, displayName }) => {
+        try {
+          const result = await sender.sendFetchResult(items);
+          return { displayName, result };
+        } catch (e) {
+          return { displayName, error: e.message };
+        }
+      })
+    );
+
+    let successCount = 0;
+    results.forEach((settledResult) => {
+      if (settledResult.status === 'fulfilled') {
+        const { displayName, result, error } = settledResult.value;
+        if (result && result.success) {
+          successCount++;
+          this.logger.success(`[${displayName}] 测试抓取通知发送成功`);
+        } else {
+          const errorMsg = result?.error || error || '未知错误';
+          this.logger.error(`[${displayName}] 测试抓取通知发送失败: ${errorMsg}`);
+        }
+      } else {
+        this.logger.error(`[发送器] 测试抓取通知发送异常: ${settledResult.reason?.message || settledResult.reason}`);
+      }
+    });
+
+    if (successCount > 0) {
+      this.logger.success(`测试抓取通知已发送到 ${successCount} 个发送器`);
     }
   }
 }

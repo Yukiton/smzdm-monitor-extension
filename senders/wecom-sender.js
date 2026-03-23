@@ -49,20 +49,6 @@ class WeComSender extends BaseSender {
     ];
   }
 
-  /**
-   * 格式化时间
-   */
-  formatTime(date = new Date()) {
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  }
-
   validateConfig() {
     const { webhookUrl } = this.config;
 
@@ -89,6 +75,10 @@ class WeComSender extends BaseSender {
       return this.createErrorResult('未配置 Webhook 地址');
     }
 
+    // 创建 AbortController 用于超时控制
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+
     try {
       const response = await fetch(webhookUrl, {
         method: 'POST',
@@ -96,9 +86,11 @@ class WeComSender extends BaseSender {
           'Content-Type': 'application/json',
           'User-Agent': 'SMZDM-Monitor/1.0'
         },
-        body: JSON.stringify(content)
+        body: JSON.stringify(content),
+        signal: controller.signal
       });
 
+      clearTimeout(timeoutId);
       const result = await response.json();
 
       if (result.errcode === 0) {
@@ -107,6 +99,10 @@ class WeComSender extends BaseSender {
         return this.createErrorResult(result.errmsg || '发送失败');
       }
     } catch (e) {
+      clearTimeout(timeoutId);
+      if (e.name === 'AbortError') {
+        return this.createErrorResult('请求超时');
+      }
       return this.createErrorResult(e.message);
     }
   }
@@ -137,12 +133,14 @@ class WeComSender extends BaseSender {
    */
   formatMarkdown(items) {
     const now = this.formatTime();
-    const itemsContent = items.slice(0, 10).map((item, i) =>
-      `**${i + 1}. ${this.escapeMarkdown(item.title)}**\n` +
-      `> 💰 价格: ${item.price}\n` +
-      `> ⏰ 时间: ${item.time}\n` +
-      `> 🔗 [查看详情](${item.link})`
-    ).join('\n\n');
+    const itemsContent = items.slice(0, 10).map((item, i) => {
+      const safeUrl = this.safeLink(item.link);
+      const linkText = safeUrl ? `[查看详情](${safeUrl})` : '';
+      return `**${i + 1}. ${this.escapeMarkdown(item.title)}**\n` +
+        `> 💰 价格: ${item.price}\n` +
+        `> ⏰ 时间: ${item.time}` +
+        (linkText ? `\n> 🔗 ${linkText}` : '');
+    }).join('\n\n');
 
     const footer = items.length > 10
       ? `\n\n... 还有 ${items.length - 10} 条爆料`
@@ -182,14 +180,6 @@ class WeComSender extends BaseSender {
           `${itemsText}`
       }
     };
-  }
-
-  /**
-   * 转义 Markdown 特殊字符
-   */
-  escapeMarkdown(text) {
-    if (!text) return '';
-    return text.replace(/([*_`\[\]])/g, '\\$1');
   }
 
   /**
@@ -240,6 +230,9 @@ class WeComSender extends BaseSender {
    * 发送调试模式通知
    */
   async sendDebug(item) {
+    const safeUrl = this.safeLink(item.link);
+    const linkText = safeUrl ? `[查看详情](${safeUrl})` : '';
+
     const content = {
       msgtype: 'markdown',
       markdown: {
@@ -250,9 +243,9 @@ class WeComSender extends BaseSender {
           `---\n\n` +
           `**${this.escapeMarkdown(item.title)}**\n` +
           `> 💰 价格: ${item.price}\n` +
-          `> ⏰ 时间: ${item.time}\n` +
-          `> 🔗 [查看详情](${item.link})\n\n` +
-          `---\n` +
+          `> ⏰ 时间: ${item.time}` +
+          (linkText ? `\n> 🔗 ${linkText}` : '') +
+          `\n\n---\n` +
           `*SMZDM 爆料监控器 调试模式*`
       }
     };
@@ -264,6 +257,17 @@ class WeComSender extends BaseSender {
    * 发送测试抓取结果
    */
   async sendFetchResult(items) {
+    const itemsContent = items.slice(0, 10).map((item, i) => {
+      const safeUrl = this.safeLink(item.link);
+      const linkText = safeUrl ? `[查看详情](${safeUrl})` : '';
+      return `**${i + 1}. ${this.escapeMarkdown(item.title)}**\n` +
+        `> 💰 价格: ${item.price}\n` +
+        `> ⏰ 时间: ${item.time}` +
+        (linkText ? `\n> 🔗 ${linkText}` : '');
+    }).join('\n\n');
+
+    const footer = items.length > 10 ? `\n\n... 还有 ${items.length - 10} 条` : '';
+
     const content = {
       msgtype: 'markdown',
       markdown: {
@@ -272,13 +276,7 @@ class WeComSender extends BaseSender {
           `⏰ 抓取时间: ${this.formatTime()}\n` +
           `📊 抓取数量: **${items.length}** 条\n\n` +
           `---\n\n` +
-          items.slice(0, 10).map((item, i) =>
-            `**${i + 1}. ${this.escapeMarkdown(item.title)}**\n` +
-            `> 💰 价格: ${item.price}\n` +
-            `> ⏰ 时间: ${item.time}\n` +
-            `> 🔗 [查看详情](${item.link})`
-          ).join('\n\n') +
-          (items.length > 10 ? `\n\n... 还有 ${items.length - 10} 条` : '') +
+          `${itemsContent}${footer}` +
           `\n\n---\n*由 SMZDM 爆料监控器 测试抓取推送*`
       }
     };

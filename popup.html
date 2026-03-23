@@ -169,6 +169,7 @@
     
     input[type="text"],
     input[type="number"],
+    input[type="password"],
     select {
       width: 100%;
       padding: 10px 12px;
@@ -434,6 +435,169 @@
     .toast.success { border-left: 3px solid var(--success); }
     .toast.error { border-left: 3px solid var(--danger); }
     .toast.warning { border-left: 3px solid var(--warning); }
+
+    /* 发送器卡片样式 */
+    .sender-card {
+      background: var(--bg-card);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      transition: all 0.2s ease;
+    }
+
+    .sender-card:hover {
+      border-color: var(--primary);
+    }
+
+    .sender-card.disabled {
+      opacity: 0.6;
+    }
+
+    .sender-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .sender-info {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sender-icon {
+      font-size: 24px;
+    }
+
+    .sender-name {
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .sender-status {
+      font-size: 11px;
+      color: var(--success);
+      background: rgba(72, 187, 120, 0.2);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .sender-status.disabled {
+      color: var(--text-secondary);
+      background: rgba(160, 174, 192, 0.2);
+    }
+
+    .sender-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .sender-actions button {
+      padding: 6px 10px;
+      font-size: 11px;
+      flex: none;
+      min-width: auto;
+    }
+
+    .sender-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .sender-toggle-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    /* 弹窗样式 */
+    .modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .modal-content {
+      background: var(--bg-dark);
+      border-radius: 12px;
+      width: 90%;
+      max-width: 380px;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-header h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .modal-close {
+      background: none;
+      border: none;
+      color: var(--text-secondary);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      min-width: auto;
+    }
+
+    .modal-close:hover {
+      color: var(--text-primary);
+    }
+
+    .modal-body {
+      padding: 16px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .modal-footer {
+      display: flex;
+      gap: 10px;
+      padding: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .modal-footer button {
+      flex: 1;
+    }
+
+    /* 空状态 */
+    .empty-state {
+      text-align: center;
+      padding: 30px 20px;
+      color: var(--text-secondary);
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    .empty-state-text {
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
@@ -441,7 +605,7 @@
     <!-- 头部 -->
     <div class="header">
       <h1>SMZDM 爆料监控器</h1>
-      <span class="version">v1.23.0</span>
+      <span class="version" id="versionText"></span>
     </div>
     
     <!-- 状态卡片 -->
@@ -512,33 +676,46 @@
 
     <!-- 发送器设置 -->
     <div id="sender" class="tab-content">
-      <!-- 发送器启用开关 -->
-      <div class="switch-container">
-        <div>
-          <span class="switch-label">📤 启用发送器</span>
-          <div class="help-text" style="margin-top: 2px">开启后将发送通知到配置的渠道</div>
+      <!-- 发送器列表 -->
+      <div id="sendersList">
+        <!-- 动态渲染发送器卡片 -->
+      </div>
+
+      <!-- 添加发送器按钮 -->
+      <button id="addSenderBtn" class="secondary" style="width:100%;margin-top:10px">
+        ➕ 添加发送器
+      </button>
+
+      <!-- 测试发送按钮 -->
+      <button id="testBtn" class="primary" style="width:100%;margin-top:10px">
+        🧪 测试发送
+      </button>
+
+      <!-- 发送器配置弹窗 -->
+      <div id="senderModal" class="modal" style="display:none">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h3 id="modalTitle">添加发送器</h3>
+            <button class="modal-close" id="closeModalBtn">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>发送器类型</label>
+              <select id="modalSenderType">
+                <!-- 动态填充 -->
+              </select>
+            </div>
+            <div id="modalSenderConfig">
+              <!-- 动态渲染配置字段 -->
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button id="deleteSenderInModalBtn" class="danger" style="display:none">删除</button>
+            <div style="flex:1"></div>
+            <button id="cancelSenderBtn" class="secondary">取消</button>
+            <button id="saveSenderBtn" class="primary">保存</button>
+          </div>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="senderEnabled" checked>
-          <span class="slider"></span>
-        </label>
-      </div>
-
-      <div class="form-group">
-        <label>发送器类型</label>
-        <select id="senderType">
-          <!-- 动态填充 -->
-        </select>
-        <div class="help-text">选择通知发送渠道</div>
-      </div>
-
-      <!-- 动态配置区域 -->
-      <div id="senderConfigContainer">
-        <!-- 由 JS 动态渲染 -->
-      </div>
-
-      <div class="btn-group">
-        <button id="testBtn" class="secondary">🧪 测试发送</button>
       </div>
     </div>
     

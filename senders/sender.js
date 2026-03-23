@@ -143,6 +143,63 @@ class BaseSender {
       missingFields
     };
   }
+
+  /**
+   * 格式化时间（通用实现）
+   * @param {Date} date - 日期对象
+   * @returns {string} 格式化后的时间字符串
+   */
+  formatTime(date = new Date()) {
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+
+  /**
+   * 验证并返回安全的链接
+   * 只允许 http 和 https 协议，防止 javascript: 等危险协议
+   * @param {string} link - 原始链接
+   * @returns {string} 安全的链接或空字符串
+   */
+  safeLink(link) {
+    if (!link) return '';
+    const trimmed = link.trim();
+    // 只允许 http 和 https 协议
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    return '';
+  }
+
+  /**
+   * 转义 HTML 特殊字符
+   * @param {string} text - 原始文本
+   * @returns {string} 转义后的文本
+   */
+  escapeHtml(text) {
+    if (!text) return '';
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * 转义 Markdown 特殊字符
+   * @param {string} text - 原始文本
+   * @returns {string} 转义后的文本
+   */
+  escapeMarkdown(text) {
+    if (!text) return '';
+    return text.replace(/([*_`\[\]])/g, '\\$1');
+  }
 }
 
 // 用于 background.js 中作为 Service Worker 导出

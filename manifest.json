@@ -14,7 +14,8 @@
   "host_permissions": [
     "https://zhiyou.smzdm.com/*",
     "https://www.smzdm.com/*",
-    "https://*/*"
+    "https://api.resend.com/*",
+    "https://qyapi.weixin.qq.com/*"
   ],
   "background": {
     "service_worker": "background.js"
