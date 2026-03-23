@@ -1,5 +1,5 @@
 // SMZDM 爆料监控器 - Content Script
-// 版本 1.24.0 - 多发送器支持版本
+// 版本 1.23.0 - 多发送器支持版本
 
 (function() {
   'use strict';
@@ -7,7 +7,6 @@
   // ==================== 配置 ====================
   const CONFIG = {
     VERSION: chrome.runtime.getManifest().version,
-    CHECK_INTERVAL: 30000,  // 改为 30 秒检测一次
     CAPTCHA_SELECTORS: [
       '.geetest',
       '.gt_slider',
@@ -133,7 +132,6 @@
   // ==================== 内容提取器 ====================
   class ContentExtractor {
     constructor() {
-      this.lastItems = [];
       this.lastHash = '';
     }
 
@@ -203,10 +201,8 @@
     constructor() {
       this.captchaDetector = new CaptchaDetector();
       this.contentExtractor = new ContentExtractor();
-      this.isRunning = false;
-      this.checkInterval = null;
       this.observer = null;
-      
+
       this.init();
     }
 
@@ -222,14 +218,9 @@
     }
 
     start() {
-      this.isRunning = true;
-      
-      // 不再设置定时检查，完全由 background.js 控制
-      // 初始检查也取消，等待 background 触发
-      
       // 设置 MutationObserver 监听 DOM 变化（用于验证码检测）
       this.setupObserver();
-      
+
       console.log('[SMZDM Monitor] 监控已启动，等待后台指令');
     }
 
@@ -285,18 +276,11 @@
     }
 
     stop() {
-      this.isRunning = false;
-      
-      if (this.checkInterval) {
-        clearInterval(this.checkInterval);
-        this.checkInterval = null;
-      }
-      
       if (this.observer) {
         this.observer.disconnect();
         this.observer = null;
       }
-      
+
       console.log('[SMZDM Monitor] 监控已停止');
     }
   }

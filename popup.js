@@ -1,5 +1,5 @@
 // SMZDM 爆料监控器 - Popup 控制脚本
-// 版本 1.24.0 - 多发送器支持版本
+// 版本 1.23.0 - 多发送器支持版本
 
 class PopupController {
   constructor() {
@@ -485,7 +485,8 @@ class PopupController {
         captchaCount: 0,
         startTime: null,
         lastCheck: null,
-        nextCheckTime: null
+        nextCheckTime: null,
+        scheduledInterval: null
       };
       this.stats = { ...defaultStats, ...(result.stats || {}) };
       
@@ -709,7 +710,8 @@ class PopupController {
         captchaCount: 0,
         startTime: null,
         lastCheck: null,
-        nextCheckTime: null
+        nextCheckTime: null,
+        scheduledInterval: null
       };
       this.updateStatsUI();
       this.showToast('数据已清除', 'success');
@@ -871,7 +873,8 @@ class PopupController {
       this.nextCheckTime = Date.now() + ((this.settings.refreshInterval || 60) * 1000);
     }
 
-    this.progressDuration = (this.settings.refreshInterval || 60) * 1000;
+    // 使用实际调度间隔（如果有的话），否则使用用户设置的间隔
+    this.progressDuration = this.stats?.scheduledInterval || ((this.settings.refreshInterval || 60) * 1000);
 
     // 启动进度更新
     this.progressIntervalId = setInterval(() => {
@@ -942,7 +945,7 @@ class PopupController {
         // 更新 nextCheckTime
         if (this.settings.isRunning && data.stats && data.stats.nextCheckTime) {
           this.nextCheckTime = data.stats.nextCheckTime;
-          this.progressDuration = (this.settings.refreshInterval || 60) * 1000;
+          this.progressDuration = data.stats.scheduledInterval || ((this.settings.refreshInterval || 60) * 1000);
         }
       }
 

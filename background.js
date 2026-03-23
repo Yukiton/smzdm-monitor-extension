@@ -453,7 +453,6 @@ class SMZDMMonitor {
   constructor() {
     this.isRunning = false;
     this.isPaused = false;
-    this.currentTabId = null;
     this.settings = {};
     this.stats = {
       checkCount: 0,
@@ -461,9 +460,10 @@ class SMZDMMonitor {
       captchaCount: 0,
       startTime: null,
       lastCheck: null,
-      nextCheckTime: null
+      nextCheckTime: null,
+      scheduledInterval: null
     };
-    
+
     // 初始化组件
     this.logger = new LogManager();
     this.storage = new StorageManager();
@@ -492,9 +492,6 @@ class SMZDMMonitor {
     // 监听定时器
     this.setupAlarmListener();
 
-    // 监听标签页关闭
-    this.setupTabListener();
-
     // 恢复监控状态
     await this.restoreMonitorState();
 
@@ -506,20 +503,8 @@ class SMZDMMonitor {
     if (this.settings.isRunning) {
       this.logger.info('恢复监控状态...');
       this.isRunning = true;
-      
+
       try {
-        // 尝试获取现有标签页
-        const tabs = await chrome.tabs.query({ url: this.settings.targetUrl });
-        if (tabs.length > 0) {
-          this.currentTabId = tabs[0].id;
-          this.logger.info('已恢复标签页');
-        } else {
-          // 需要重新创建标签页
-          this.logger.info('重新创建监控标签页...');
-          this.currentTabId = await this.getOrCreateTab();
-          await this.waitForTabLoad();
-        }
-        
         // 检查是否有下次检查时间，如果没有则立即调度
         if (!this.stats.nextCheckTime || this.stats.nextCheckTime < Date.now()) {
           // 上次检查时间已过，立即执行一次检查
@@ -532,7 +517,7 @@ class SMZDMMonitor {
           chrome.alarms.create('checkUpdate', { delayInMinutes });
           this.logger.info(`已恢复定时器，${Math.round(remaining/1000)} 秒后检查`);
         }
-        
+
         this.logger.success('监控状态已恢复');
       } catch (e) {
         this.logger.error('恢复监控状态失败:', e.message);
@@ -687,16 +672,6 @@ class SMZDMMonitor {
     });
   }
 
-  setupTabListener() {
-    chrome.tabs.onRemoved.addListener((tabId) => {
-      if (tabId === this.currentTabId) {
-        this.logger.warn('监控标签页已关闭，下次检查时将重建');
-        this.currentTabId = null;
-        // 标记需要重建，但不停止监控
-      }
-    });
-  }
-
   async handleMessage(message, sender, sendResponse) {
     try {
       switch (message.action) {
@@ -834,13 +809,6 @@ class SMZDMMonitor {
         return;
       }
 
-      // 创建或获取标签页
-      this.currentTabId = await this.getOrCreateTab();
-
-      // 等待页面加载完成
-      this.logger.info('等待页面加载...');
-      await this.waitForTabLoad();
-
       await this.storage.set('captchaDetected', false);
 
       // 启动定时检查
@@ -870,38 +838,25 @@ class SMZDMMonitor {
     this.logger.info('监控已停止');
   }
 
-  async getOrCreateTab() {
-    const tabs = await chrome.tabs.query({ url: this.settings.targetUrl });
-    
-    if (tabs.length > 0) {
-      return tabs[0].id;
-    }
-    
-    const tab = await chrome.tabs.create({
-      url: this.settings.targetUrl,
-      active: false
-    });
-    
-    return tab.id;
-  }
-
   async scheduleNextCheck() {
     if (!this.isRunning || this.isPaused) {
       this.logger.warn('调度跳过: 监控未运行或已暂停');
       return;
     }
-    
+
     const interval = this.antiCrawler.getRefreshInterval();
     const delayInMinutes = interval / 60;
-    
+    const intervalMs = interval * 1000;
+
     // 计算下次检查时间并保存
-    this.stats.nextCheckTime = Date.now() + (interval * 1000);
+    this.stats.nextCheckTime = Date.now() + intervalMs;
+    this.stats.scheduledInterval = intervalMs; // 保存实际调度间隔，用于进度条
     await this.saveStats();
-    
+
     chrome.alarms.create('checkUpdate', {
       delayInMinutes: Math.max(delayInMinutes, 0.5)
     });
-    
+
     this.logger.success(`已调度下次检查: ${Math.round(interval)} 秒后`);
   }
 
@@ -913,44 +868,49 @@ class SMZDMMonitor {
 
     this.logger.info('开始检查更新...');
 
-    try {
-      // 检查是否需要创建或重建标签页
-      let needReload = false;
+    let tempTabId = null;
 
-      if (!this.currentTabId) {
-        // 没有标签页，创建新的
-        this.logger.info('创建监控标签页...');
-        const tab = await chrome.tabs.create({
-          url: this.settings.targetUrl,
-          active: false
-        });
-        this.currentTabId = tab.id;
-        // 等待新页面加载完成
-        await this.waitForTabLoad(this.currentTabId, 30000);
-        await Utils.sleep(2000); // 等待动态内容
-      } else {
-        // 检查标签页是否还存在
-        try {
-          const tab = await chrome.tabs.get(this.currentTabId);
-          if (tab) {
-            // 标签页存在，刷新页面
-            this.logger.info('刷新监控标签页...');
-            await chrome.tabs.reload(this.currentTabId);
-            await this.waitForTabLoad(this.currentTabId, 30000);
-            await Utils.sleep(2000);
+    try {
+      // 创建临时标签页
+      this.logger.info('创建临时标签页...');
+      const tab = await chrome.tabs.create({
+        url: this.settings.targetUrl,
+        active: false
+      });
+      tempTabId = tab.id;
+
+      // 等待页面加载完成
+      await new Promise((resolve) => {
+        let resolved = false;
+        const cleanup = () => {
+          if (!resolved) {
+            resolved = true;
+            chrome.tabs.onUpdated.removeListener(listener);
+            clearTimeout(timeoutId);
+            resolve();
           }
-        } catch (e) {
-          // 标签页不存在，重新创建
-          this.logger.info('监控标签页已不存在，重新创建...');
-          const tab = await chrome.tabs.create({
-            url: this.settings.targetUrl,
-            active: false
-          });
-          this.currentTabId = tab.id;
-          await this.waitForTabLoad(this.currentTabId, 30000);
-          await Utils.sleep(2000);
-        }
-      }
+        };
+
+        const listener = (tabId, info) => {
+          if (tabId === tempTabId && info.status === 'complete') {
+            this.logger.info('页面加载完成');
+            cleanup();
+          }
+        };
+
+        chrome.tabs.onUpdated.addListener(listener);
+
+        // 超时处理
+        const timeoutId = setTimeout(() => {
+          if (!resolved) {
+            this.logger.warn('页面加载超时，继续尝试提取...');
+            cleanup();
+          }
+        }, 30000);
+      });
+
+      // 额外等待确保动态内容加载
+      await Utils.sleep(2000);
 
       // 更新统计
       this.stats.checkCount++;
@@ -959,8 +919,14 @@ class SMZDMMonitor {
 
       // 执行内容脚本
       this.logger.info('正在提取页面内容...');
-      const results = await this.executeContentScript();
+      const results = await this.executeContentScript(tempTabId);
       this.logger.info(`内容提取完成: ${results.items?.length || 0} 条, 验证码: ${results.hasCaptcha}`);
+
+      // 关闭临时标签页
+      if (tempTabId) {
+        await chrome.tabs.remove(tempTabId);
+        tempTabId = null;
+      }
 
       if (results.hasCaptcha) {
         await this.onCaptchaDetected();
@@ -974,54 +940,33 @@ class SMZDMMonitor {
 
     } catch (e) {
       this.logger.error('检查失败:', e.message);
+
+      // 确保关闭临时标签页
+      if (tempTabId) {
+        try {
+          await chrome.tabs.remove(tempTabId);
+        } catch (err) {
+          // 忽略关闭错误
+        }
+      }
     }
 
     // 调度下次检查
     await this.scheduleNextCheck();
   }
 
-  async waitForTabLoad(tabId = null, timeout = 30000) {
-    const targetTabId = tabId || this.currentTabId;
-    if (!targetTabId) return;
-    
-    return new Promise((resolve) => {
-      const listener = (tid, info) => {
-        if (tid === targetTabId && info.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      };
-      
-      chrome.tabs.onUpdated.addListener(listener);
-      
-      // 超时处理
-      setTimeout(() => {
-        chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
-      }, timeout);
-    });
-  }
-
-  async executeContentScript(tabId = null) {
-    const targetTabId = tabId || this.currentTabId;
-    
-    if (!targetTabId) {
+  async executeContentScript(tabId) {
+    if (!tabId) {
       return { hasCaptcha: false, items: [], error: '没有可用的标签页' };
     }
-    
+
     // 先检查标签页是否存在且状态正常
     try {
-      const tab = await chrome.tabs.get(targetTabId);
+      const tab = await chrome.tabs.get(tabId);
       if (!tab) {
         return { hasCaptcha: false, items: [], error: '标签页不存在' };
       }
       this.logger.info(`标签页状态: ${tab.status}, URL: ${tab.url?.substring(0, 50)}...`);
-      
-      // 如果页面还在加载，等待加载完成
-      if (tab.status !== 'complete') {
-        this.logger.info('页面正在加载，等待完成...');
-        await this.waitForTabLoad(targetTabId, 20000);
-      }
     } catch (e) {
       this.logger.error('标签页检查失败:', e.message);
       return { hasCaptcha: false, items: [], error: '标签页不存在或已关闭: ' + e.message };
@@ -1162,13 +1107,13 @@ class SMZDMMonitor {
     
     try {
       // 再次检查标签页是否有效
-      const tab = await chrome.tabs.get(targetTabId);
+      const tab = await chrome.tabs.get(tabId);
       if (!tab || tab.status === 'unloaded') {
         return { hasCaptcha: false, items: [], error: '标签页已关闭' };
       }
-      
+
       const executePromise = chrome.scripting.executeScript({
-        target: { tabId: targetTabId },
+        target: { tabId: tabId },
         func: extractContent
       });
       
@@ -1313,37 +1258,6 @@ class SMZDMMonitor {
     });
   }
 
-  async refreshTab() {
-    if (!this.currentTabId) return;
-    
-    try {
-      // 添加随机延迟模拟人类行为
-      const delay = this.antiCrawler.getBehaviorDelay();
-      this.logger.info(`等待 ${Math.round(delay/1000)} 秒后刷新...`);
-      await Utils.sleep(delay);
-      
-      await chrome.tabs.reload(this.currentTabId, { bypassCache: true });
-      this.logger.info('页面已刷新，等待加载...');
-      
-      // 等待页面加载完成
-      await this.waitForTabLoad();
-      this.logger.info('页面加载完成');
-    } catch (e) {
-      this.logger.error('刷新失败:', e.message);
-    }
-  }
-
-  async recoverTab() {
-    this.logger.info('尝试恢复监控标签页...');
-    
-    try {
-      this.currentTabId = await this.getOrCreateTab();
-      this.logger.success('标签页已恢复');
-    } catch (e) {
-      this.logger.error('恢复失败:', e.message);
-    }
-  }
-
   async onCaptchaDetected() {
     this.logger.warn('⚠️ 检测到验证码！');
 
@@ -1464,7 +1378,8 @@ class SMZDMMonitor {
       captchaCount: 0,
       startTime: null,
       lastCheck: null,
-      nextCheckTime: null
+      nextCheckTime: null,
+      scheduledInterval: null
     };
     this.logger.clear();
     this.logger.info('数据已清除');
